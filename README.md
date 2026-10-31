@@ -435,10 +435,14 @@ All the tools below were used throughout the crack chain + development:
   head = bone 7.
 - **Rendering**: D3D9 EndScene vtable hook; VP matrix from tracer+0x150
   (validated, fallback to device transforms); D3DXLine/D3DXFont.
-- **Injector**: `LoadLibraryA` remote thread (not manual map) — the DLL is
-  already cracked so no stealth is needed. Injector is 32-bit (i686) because
-  PB is x86. ANSI path + `LoadLibraryA` keeps the WOW64 shared kernel32
-  address valid.
+- **Injector**: stealth **manual map** — the DLL is mapped section-by-section
+  into the target with per-section protections (no RWX blob), imports and
+  relocations resolved, DllMain called via a small shellcode stub, then the PE
+  headers are wiped so memory scans find no MZ/PE signature. The DLL never
+  enters the module list. Before mapping, the injector kills `CB.exe` /
+  `CBConfig.exe` and clears `BeingDebugged` + `NtGlobalFlag` in the target's
+  PEB. `LoadLibraryA` remote thread is kept only as a fallback if manual map
+  fails. Injector is 32-bit (i686) because PB is x86.
 
 ## Tuning
 

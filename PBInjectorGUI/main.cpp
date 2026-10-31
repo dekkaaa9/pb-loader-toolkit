@@ -330,8 +330,523 @@ static bool ModuleScan(DWORD pid, bool numericOnly, std::wstring& foundOut) {
 }
 
 // ============================================================
-// injection core (replika inject_v2.ps1)
+// injection core — stealth manual map
+// Ported from PBInjector (manual map) + PBCheat\bypass.cpp
+// (CB killer, PEB clear). LoadLibraryA kept only as fallback.
 // ============================================================
+
+// ---- PE structures (32-bit) ----
+typedef struct {
+    WORD  Machine;
+    WORD  NumberOfSections;
+    DWORD TimeDateStamp;
+    DWORD PointerToSymbolTable;
+    DWORD NumberOfSymbols;
+    WORD  SizeOfOptionalHeader;
+    WORD  Characteristics;
+} MM_FILE_HEADER;
+
+typedef struct {
+    DWORD VirtualAddress;
+    DWORD Size;
+} MM_DATA_DIRECTORY;
+
+typedef struct {
+    WORD  Magic;
+    BYTE  MajorLinkerVersion;
+    BYTE  MinorLinkerVersion;
+    DWORD SizeOfCode;
+    DWORD SizeOfInitializedData;
+    DWORD SizeOfUninitializedData;
+    DWORD AddressOfEntryPoint;
+    DWORD BaseOfCode;
+    DWORD BaseOfData;
+    DWORD ImageBase;
+    DWORD SectionAlignment;
+    DWORD FileAlignment;
+    WORD  MajorOperatingSystemVersion;
+    WORD  MinorOperatingSystemVersion;
+    WORD  MajorImageVersion;
+    WORD  MinorImageVersion;
+    WORD  MajorSubsystemVersion;
+    WORD  MinorSubsystemVersion;
+    DWORD Win32VersionValue;
+    DWORD SizeOfImage;
+    DWORD SizeOfHeaders;
+    DWORD CheckSum;
+    WORD  Subsystem;
+    WORD  DllCharacteristics;
+    DWORD SizeOfStackReserve;
+    DWORD SizeOfStackCommit;
+    DWORD SizeOfHeapReserve;
+    DWORD SizeOfHeapCommit;
+    DWORD LoaderFlags;
+    DWORD NumberOfRvaAndSizes;
+    MM_DATA_DIRECTORY DataDirectory[16];
+} MM_OPTIONAL_HEADER32;
+
+typedef struct {
+    DWORD Signature;
+    MM_FILE_HEADER FileHeader;
+    MM_OPTIONAL_HEADER32 OptionalHeader;
+} MM_NT_HEADERS32;
+
+typedef struct {
+    BYTE  Name[8];
+    DWORD VirtualSize;
+    DWORD VirtualAddress;
+    DWORD SizeOfRawData;
+    DWORD PointerToRawData;
+    DWORD PointerToRelocations;
+    DWORD PointerToLinenumbers;
+    WORD  NumberOfRelocations;
+    WORD  NumberOfLinenumbers;
+    DWORD Characteristics;
+} MM_SECTION_HEADER;
+
+// NtQueryInformationProcess -> ProcessBasicInformation
+typedef struct {
+    LONG  ExitStatus;
+    PVOID PebBaseAddress;
+    ULONG AffinityMask;
+    LONG  BasePriority;
+    ULONG UniqueProcessId;
+    ULONG InheritedFromUniqueProcessId;
+} MM_PBI;
+
+typedef LONG (WINAPI* fnNtQIP)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+
+// Shellcode: call DllMain(hModule, DLL_PROCESS_ATTACH, NULL)
+static const uint8_t MM_SHELLCODE[] = {
+    0x6A, 0x00,                         // push 0
+    0x6A, 0x01,                         // push 1
+    0x68, 0x00, 0x00, 0x00, 0x00,       // push hModule (patched)
+    0xB8, 0x00, 0x00, 0x00, 0x00,       // mov eax, pDllMain (patched)
+    0xFF, 0xD0,                         // call eax
+    0xC3                                // ret
+};
+
+static DWORD MmRvaToFileOffset(const std::vector<uint8_t>& d, DWORD rva) {
+    auto* dos = (IMAGE_DOS_HEADER*)d.data();
+    auto* nt  = (MM_NT_HEADERS32*)(d.data() + dos->e_lfanew);
+    auto* sect = (MM_SECTION_HEADER*)((BYTE*)&nt->OptionalHeader +
+        nt->FileHeader.SizeOfOptionalHeader);
+    for (int i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+        if (rva >= sect[i].VirtualAddress &&
+            rva < sect[i].VirtualAddress + sect[i].SizeOfRawData) {
+            return sect[i].PointerToRawData + (rva - sect[i].VirtualAddress);
+        }
+    }
+    return rva;
+}
+
+static DWORD MmRemoteModuleBase(DWORD pid, const char* name) {
+    wchar_t wide[MAX_PATH];
+    MultiByteToWideChar(CP_ACP, 0, name, -1, wide, MAX_PATH);
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    MODULEENTRY32W me = { sizeof(me) };
+    DWORD base = 0;
+    if (Module32FirstW(snap, &me)) {
+        do {
+            if (_wcsicmp(me.szModule, wide) == 0) {
+                base = (DWORD)(uintptr_t)me.modBaseAddr;
+                break;
+            }
+        } while (Module32NextW(snap, &me));
+    }
+    CloseHandle(snap);
+    return base;
+}
+
+static DWORD MmFindProcess(const wchar_t* name) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    PROCESSENTRY32W pe = { sizeof(pe) };
+    DWORD pid = 0;
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, name) == 0) {
+                pid = pe.th32ProcessID;
+                break;
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return pid;
+}
+
+static void MmTerminate(DWORD pid) {
+    if (!pid) return;
+    HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+    if (h) { TerminateProcess(h, 0); CloseHandle(h); }
+}
+
+// Kill CB.exe + CBConfig.exe before injecting so the AC is not
+// alive to scan the freshly mapped image.
+static int KillCheatBlocker() {
+    int killed = 0;
+    const wchar_t* names[] = { L"CB.exe", L"CBConfig.exe" };
+    for (int i = 0; i < 2; i++) {
+        for (int guard = 0; guard < 8; guard++) {
+            DWORD pid = MmFindProcess(names[i]);
+            if (!pid) break;
+            MmTerminate(pid);
+            killed++;
+            Sleep(60);
+        }
+    }
+    return killed;
+}
+
+// Clear BeingDebugged + NtGlobalFlag inside the TARGET process PEB.
+static bool PatchRemotePEB(HANDLE hProc) {
+    HMODULE hNt = GetModuleHandleA("ntdll.dll");
+    if (!hNt) return false;
+    fnNtQIP NtQIP = (fnNtQIP)GetProcAddress(hNt, "NtQueryInformationProcess");
+    if (!NtQIP) return false;
+
+    MM_PBI pbi;
+    ULONG got = 0;
+    if (NtQIP(hProc, 0, &pbi, sizeof(pbi), &got) != 0) return false;
+    if (!pbi.PebBaseAddress) return false;
+
+    BYTE* peb = (BYTE*)pbi.PebBaseAddress;
+    SIZE_T w = 0;
+    BYTE  b0 = 0;
+    DWORD d0 = 0;
+    WriteProcessMemory(hProc, peb + 2, &b0, 1, &w);      // BeingDebugged
+    WriteProcessMemory(hProc, peb + 0x68, &d0, 4, &w);   // NtGlobalFlag
+    return true;
+}
+
+static bool ReadDllBytes(const std::wstring& path, std::vector<uint8_t>& out) {
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD sz = GetFileSize(f, nullptr);
+    if (sz == INVALID_FILE_SIZE || sz == 0) { CloseHandle(f); return false; }
+    out.resize(sz);
+    DWORD got = 0;
+    BOOL ok = ReadFile(f, out.data(), sz, &got, nullptr);
+    CloseHandle(f);
+    return ok && got == sz;
+}
+
+// Manual map with per-section protections (no single RWX blob) so
+// memory scanners do not flag a private executable region.
+static bool ManualMapStealth(HANDLE hProc, const std::vector<uint8_t>& dll,
+                             DWORD& outBase, DWORD& outHeaderSize) {
+    outBase = 0;
+    outHeaderSize = 0;
+    if (dll.size() < sizeof(MM_NT_HEADERS32)) return false;
+
+    auto* dos = (IMAGE_DOS_HEADER*)dll.data();
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        PostLog(L"  [-] DOS header invalid");
+        return false;
+    }
+    auto* nt = (MM_NT_HEADERS32*)(dll.data() + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) {
+        PostLog(L"  [-] NT signature invalid");
+        return false;
+    }
+    if (nt->FileHeader.Machine != IMAGE_FILE_MACHINE_I386) {
+        PostLog(L"  [-] DLL bukan 32-bit (x86)");
+        return false;
+    }
+
+    DWORD imageSize  = nt->OptionalHeader.SizeOfImage;
+    DWORD headerSize = nt->OptionalHeader.SizeOfHeaders;
+    uint32_t preferredBase = nt->OptionalHeader.ImageBase;
+
+    {
+        wchar_t b[160];
+        swprintf(b, 160, L"  [*] image=%u bytes, headers=%u, prefBase=0x%08X",
+                 (unsigned)imageSize, (unsigned)headerSize, (unsigned)preferredBase);
+        PostLog(b);
+    }
+
+    // Allocate READ/WRITE first — never leave one big RWX region behind.
+    LPVOID remoteImage = VirtualAllocEx(hProc, (LPVOID)(uintptr_t)preferredBase,
+        imageSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!remoteImage) {
+        remoteImage = VirtualAllocEx(hProc, nullptr, imageSize,
+            MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    }
+    if (!remoteImage) {
+        wchar_t b[128];
+        swprintf(b, 128, L"  [-] VirtualAllocEx GAGAL err=%lu", (unsigned long)GetLastError());
+        PostLog(b);
+        return false;
+    }
+
+    uint32_t baseAddr = (uint32_t)(uintptr_t)remoteImage;
+    uint32_t delta = baseAddr - preferredBase;
+    {
+        wchar_t b[128];
+        swprintf(b, 128, L"  [+] allocated @ 0x%08X (delta=0x%08X)", (unsigned)baseAddr, (unsigned)delta);
+        PostLog(b);
+    }
+
+    if (!WriteProcessMemory(hProc, remoteImage, dll.data(), headerSize, nullptr)) {
+        PostLog(L"  [-] gagal tulis headers");
+        return false;
+    }
+
+    auto* sect = (MM_SECTION_HEADER*)((BYTE*)&nt->OptionalHeader +
+        nt->FileHeader.SizeOfOptionalHeader);
+    for (int i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+        if (sect[i].SizeOfRawData == 0) continue;
+        if (!WriteProcessMemory(hProc, (LPVOID)(uintptr_t)(baseAddr + sect[i].VirtualAddress),
+                dll.data() + sect[i].PointerToRawData, sect[i].SizeOfRawData, nullptr)) {
+            wchar_t b[128];
+            swprintf(b, 128, L"  [-] gagal tulis section %d", i);
+            PostLog(b);
+            return false;
+        }
+    }
+    PostLog(L"  [+] sections ditulis");
+
+    // base relocations
+    auto& relocDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
+    if (relocDir.Size > 0 && delta != 0) {
+        DWORD relocFileOff = MmRvaToFileOffset(dll, relocDir.VirtualAddress);
+        auto* relocBlock = (IMAGE_BASE_RELOCATION*)(dll.data() + relocFileOff);
+        DWORD processed = 0;
+        int applied = 0;
+        while (processed < relocDir.Size && relocBlock->SizeOfBlock > 0) {
+            DWORD count = (relocBlock->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
+            WORD* entries = (WORD*)((BYTE*)relocBlock + sizeof(IMAGE_BASE_RELOCATION));
+            for (DWORD j = 0; j < count; j++) {
+                int type = entries[j] >> 12;
+                int offset = entries[j] & 0xFFF;
+                if (type == IMAGE_REL_BASED_HIGHLOW) {
+                    uint32_t* patch = (uint32_t*)(uintptr_t)(baseAddr + relocBlock->VirtualAddress + offset);
+                    uint32_t orig = *(uint32_t*)(dll.data() +
+                        MmRvaToFileOffset(dll, relocBlock->VirtualAddress + offset));
+                    orig += delta;
+                    WriteProcessMemory(hProc, patch, &orig, sizeof(uint32_t), nullptr);
+                    applied++;
+                }
+            }
+            processed += relocBlock->SizeOfBlock;
+            relocBlock = (IMAGE_BASE_RELOCATION*)((BYTE*)relocBlock + relocBlock->SizeOfBlock);
+        }
+        wchar_t b[128];
+        swprintf(b, 128, L"  [+] relocations applied (%d)", applied);
+        PostLog(b);
+    }
+
+    // imports
+    auto& importDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    if (importDir.Size > 0) {
+        DWORD pid = GetProcessId(hProc);
+        DWORD importFileOff = MmRvaToFileOffset(dll, importDir.VirtualAddress);
+        auto* importDesc = (IMAGE_IMPORT_DESCRIPTOR*)(dll.data() + importFileOff);
+        while (importDesc->Name != 0) {
+            const char* dllName = (const char*)(dll.data() +
+                MmRvaToFileOffset(dll, importDesc->Name));
+            HMODULE hLocal = GetModuleHandleA(dllName);
+            if (!hLocal) hLocal = LoadLibraryA(dllName);
+            if (!hLocal) {
+                wchar_t b[160];
+                swprintf(b, 160, L"  [!] dependency gak ke-load: %S", dllName);
+                PostLog(b);
+                importDesc++;
+                continue;
+            }
+            DWORD remoteBase = MmRemoteModuleBase(pid, dllName);
+            if (!remoteBase) {
+                wchar_t b[160];
+                swprintf(b, 160, L"  [!] gak ke-load di target: %S", dllName);
+                PostLog(b);
+                importDesc++;
+                continue;
+            }
+            DWORD localBase = (DWORD)(uintptr_t)hLocal;
+            DWORD thunkFileOff = MmRvaToFileOffset(dll, importDesc->FirstThunk);
+            DWORD origThunkFileOff = importDesc->OriginalFirstThunk ?
+                MmRvaToFileOffset(dll, importDesc->OriginalFirstThunk) : thunkFileOff;
+            auto* origThunk = (IMAGE_THUNK_DATA32*)(dll.data() + origThunkFileOff);
+            int idx = 0;
+            while (origThunk[idx].u1.AddressOfData != 0) {
+                uint32_t funcAddr = 0;
+                if (origThunk[idx].u1.Ordinal & IMAGE_ORDINAL_FLAG32) {
+                    DWORD ordinal = IMAGE_ORDINAL32(origThunk[idx].u1.Ordinal);
+                    FARPROC lp = GetProcAddress(hLocal, (LPCSTR)(uintptr_t)ordinal);
+                    if (lp) funcAddr = remoteBase + ((DWORD)(uintptr_t)lp - localBase);
+                } else {
+                    auto* importName = (IMAGE_IMPORT_BY_NAME*)(dll.data() +
+                        MmRvaToFileOffset(dll, origThunk[idx].u1.AddressOfData));
+                    FARPROC lp = GetProcAddress(hLocal, importName->Name);
+                    if (lp) funcAddr = remoteBase + ((DWORD)(uintptr_t)lp - localBase);
+                }
+                uint32_t* patch = (uint32_t*)(uintptr_t)(baseAddr + importDesc->FirstThunk + idx * 4);
+                WriteProcessMemory(hProc, patch, &funcAddr, sizeof(uint32_t), nullptr);
+                idx++;
+            }
+            importDesc++;
+        }
+        PostLog(L"  [+] imports resolved");
+    }
+
+    // per-section protections — kill the RWX signature
+    for (int i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+        DWORD ch = sect[i].Characteristics;
+        bool r = (ch & IMAGE_SCN_MEM_READ) != 0;
+        bool w = (ch & IMAGE_SCN_MEM_WRITE) != 0;
+        bool x = (ch & IMAGE_SCN_MEM_EXECUTE) != 0;
+        DWORD prot;
+        if (x && w)      prot = PAGE_EXECUTE_READWRITE;
+        else if (x && r) prot = PAGE_EXECUTE_READ;
+        else if (x)      prot = PAGE_EXECUTE;
+        else if (w)      prot = PAGE_READWRITE;
+        else if (r)      prot = PAGE_READONLY;
+        else             prot = PAGE_NOACCESS;
+        DWORD sz = sect[i].SizeOfRawData ? sect[i].SizeOfRawData : sect[i].VirtualSize;
+        DWORD old = 0;
+        VirtualProtectEx(hProc, (LPVOID)(uintptr_t)(baseAddr + sect[i].VirtualAddress),
+                         sz, prot, &old);
+    }
+    PostLog(L"  [+] section protections applied (no RWX blob)");
+
+    uint32_t entryRva = nt->OptionalHeader.AddressOfEntryPoint;
+    uint32_t dllMainAddr = baseAddr + entryRva;
+
+    uint8_t sc[sizeof(MM_SHELLCODE)];
+    memcpy(sc, MM_SHELLCODE, sizeof(sc));
+    *(uint32_t*)(sc + 5)  = baseAddr;
+    *(uint32_t*)(sc + 10) = dllMainAddr;
+
+    LPVOID remoteSc = VirtualAllocEx(hProc, nullptr, sizeof(sc),
+        MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!remoteSc) {
+        PostLog(L"  [-] gagal alloc shellcode");
+        return false;
+    }
+    WriteProcessMemory(hProc, remoteSc, sc, sizeof(sc), nullptr);
+
+    {
+        wchar_t b[128];
+        swprintf(b, 128, L"  [*] DllMain=0x%08X shellcode=0x%08X",
+                 (unsigned)dllMainAddr, (unsigned)(uintptr_t)remoteSc);
+        PostLog(b);
+    }
+
+    HANDLE th = CreateRemoteThread(hProc, nullptr, 0,
+        (LPTHREAD_START_ROUTINE)remoteSc, nullptr, 0, nullptr);
+    if (!th) {
+        wchar_t b[128];
+        swprintf(b, 128, L"  [-] CreateRemoteThread GAGAL err=%lu", (unsigned long)GetLastError());
+        PostLog(b);
+        VirtualFreeEx(hProc, remoteSc, 0, MEM_RELEASE);
+        return false;
+    }
+    WaitForSingleObject(th, 15000);
+    DWORD ec = 0;
+    GetExitCodeThread(th, &ec);
+    CloseHandle(th);
+    VirtualFreeEx(hProc, remoteSc, 0, MEM_RELEASE);
+
+    {
+        wchar_t b[128];
+        swprintf(b, 128, L"  [+] DllMain returned %d", (int)ec);
+        PostLog(b);
+    }
+
+    outBase = baseAddr;
+    outHeaderSize = headerSize;
+    return true;
+}
+
+// Wipe the MZ + PE signatures in the mapped image so memory scans
+// looking for PE headers in private regions come up empty.
+static void EraseRemoteHeaders(HANDLE hProc, DWORD base, DWORD headerSize) {
+    if (!base || !headerSize) return;
+    DWORD wipe = headerSize < 0x400 ? headerSize : 0x400;
+    std::vector<uint8_t> zeros(wipe, 0);
+    if (WriteProcessMemory(hProc, (LPVOID)(uintptr_t)base, zeros.data(), wipe, nullptr)) {
+        wchar_t b[128];
+        swprintf(b, 128, L"  [+] PE headers wiped (%u bytes)", (unsigned)wipe);
+        PostLog(b);
+    }
+}
+
+// Fallback path — LoadLibraryA remote thread (detectable, only used
+// when manual map fails).
+static bool InjectLoadLibraryA(HANDLE h, DWORD pid) {
+    char dllA[MAX_PATH];
+    int n = WideCharToMultiByte(CP_ACP, 0, DLL_PATH_W.c_str(), -1, dllA, MAX_PATH, NULL, NULL);
+    if (n <= 0) {
+        PostLog(L"  path convert gagal");
+        return false;
+    }
+    SIZE_T size = (SIZE_T)n;
+
+    LPVOID mem = VirtualAllocEx(h, NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!mem) {
+        wchar_t b[128];
+        swprintf(b, 128, L"  VirtualAllocEx GAGAL err=%lu", (unsigned long)GetLastError());
+        PostLog(b);
+        return false;
+    }
+    SIZE_T written = 0;
+    if (!WriteProcessMemory(h, mem, dllA, size, &written)) {
+        wchar_t b[128];
+        swprintf(b, 128, L"  WriteProcessMemory GAGAL err=%lu", (unsigned long)GetLastError());
+        PostLog(b);
+        VirtualFreeEx(h, mem, 0, MEM_RELEASE);
+        return false;
+    }
+
+    HMODULE k32 = GetModuleHandleA("kernel32.dll");
+    FARPROC lla = GetProcAddress(k32, "LoadLibraryA");
+    if (!lla) {
+        PostLog(L"  LoadLibraryA gak ketemu!");
+        VirtualFreeEx(h, mem, 0, MEM_RELEASE);
+        return false;
+    }
+
+    DWORD tid = 0;
+    HANDLE th = CreateRemoteThread(h, NULL, 0, (LPTHREAD_START_ROUTINE)lla, mem, 0, &tid);
+    if (!th) {
+        wchar_t b[128];
+        swprintf(b, 128, L"  CreateRemoteThread GAGAL err=%lu", (unsigned long)GetLastError());
+        PostLog(b);
+        VirtualFreeEx(h, mem, 0, MEM_RELEASE);
+        return false;
+    }
+    DWORD wait = WaitForSingleObject(th, 30000);
+    DWORD exitCode = 0;
+    GetExitCodeThread(th, &exitCode);
+    {
+        wchar_t b[128];
+        swprintf(b, 128, L"  wait=%lu exitcode=0x%08X", (unsigned long)wait, (unsigned long)exitCode);
+        PostLog(b);
+    }
+    CloseHandle(th);
+    VirtualFreeEx(h, mem, 0, MEM_RELEASE);
+
+    if (exitCode == 0) {
+        PostLog(L"  >>> LoadLibraryA RETURN 0 = DLL GAGAL LOAD");
+    } else if (exitCode >= 0xC0000000) {
+        PostLog(L"  >>> THREAD CRASH - kemungkinan injector 64-bit / address salah!");
+    } else {
+        wchar_t b[128];
+        swprintf(b, 128, L"  >>> LoadLibraryA SUKSES hmodule=0x%08X", (unsigned long)exitCode);
+        PostLog(b);
+    }
+
+    Sleep(800);
+    std::wstring mod;
+    if (ModuleScan(pid, true, mod)) {
+        PostLog(L"  >>> MODULE LIST: " + mod);
+    } else {
+        PostLog(L"  >>> MODULE LIST: DLL TETEP GAK ADA");
+    }
+    return (exitCode != 0 && exitCode < 0xC0000000);
+}
 
 static bool InjectToPid(DWORD pid) {
     HANDLE h = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
@@ -351,99 +866,51 @@ static bool InjectToPid(DWORD pid) {
         return true;
     }
 
-    char dllA[MAX_PATH];
-    int n = WideCharToMultiByte(CP_ACP, 0, DLL_PATH_W.c_str(), -1, dllA, MAX_PATH, NULL, NULL);
-    if (n <= 0) {
-        PostLog(L"  path convert gagal");
-        CloseHandle(h);
-        return false;
-    }
-    SIZE_T size = (SIZE_T)n;
-
-    LPVOID mem = VirtualAllocEx(h, NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!mem) {
-        wchar_t b[128];
-        swprintf(b, 128, L"  VirtualAllocEx GAGAL err=%lu", (unsigned long)GetLastError());
-        PostLog(b);
-        CloseHandle(h);
-        return false;
-    }
-    SIZE_T written = 0;
-    if (!WriteProcessMemory(h, mem, dllA, size, &written)) {
-        wchar_t b[128];
-        swprintf(b, 128, L"  WriteProcessMemory GAGAL err=%lu", (unsigned long)GetLastError());
-        PostLog(b);
-        VirtualFreeEx(h, mem, 0, MEM_RELEASE);
+    std::vector<uint8_t> dll;
+    if (!ReadDllBytes(DLL_PATH_W, dll)) {
+        PostLog(L"  FATAL: DLL gak kebaca: " + DLL_PATH_W);
         CloseHandle(h);
         return false;
     }
     {
         wchar_t b[128];
-        swprintf(b, 128, L"  path ditulis @ 0x%08X (%u bytes): ",
-                 (unsigned long)(uintptr_t)mem, (unsigned long)written);
-        PostLog(std::wstring(b) + DLL_PATH_W);
+        swprintf(b, 128, L"  DLL dibaca: %u bytes", (unsigned)dll.size());
+        PostLog(b);
     }
 
-    HMODULE k32 = GetModuleHandleA("kernel32.dll");
-    FARPROC lla = GetProcAddress(k32, "LoadLibraryA");
-    {
+    // 1. kill the anti-cheat before touching the target
+    int killed = KillCheatBlocker();
+    if (killed > 0) {
         wchar_t b[128];
-        swprintf(b, 128, L"  kernel32=0x%08X LoadLibraryA=0x%08X",
-                 (unsigned long)(uintptr_t)k32, (unsigned long)(uintptr_t)lla);
+        swprintf(b, 128, L"  [+] CB.exe/CBConfig.exe dimatiin (%d proses)", killed);
         PostLog(b);
-    }
-    if (!lla) {
-        PostLog(L"  LoadLibraryA gak ketemu!");
-        VirtualFreeEx(h, mem, 0, MEM_RELEASE);
-        CloseHandle(h);
-        return false;
-    }
-
-    DWORD tid = 0;
-    HANDLE th = CreateRemoteThread(h, NULL, 0, (LPTHREAD_START_ROUTINE)lla, mem, 0, &tid);
-    if (!th) {
-        wchar_t b[128];
-        swprintf(b, 128, L"  CreateRemoteThread GAGAL err=%lu", (unsigned long)GetLastError());
-        PostLog(b);
-        VirtualFreeEx(h, mem, 0, MEM_RELEASE);
-        CloseHandle(h);
-        return false;
-    }
-    {
-        wchar_t b[128];
-        swprintf(b, 128, L"  remote thread tid=%lu - waiting...", (unsigned long)tid);
-        PostLog(b);
-    }
-    DWORD wait = WaitForSingleObject(th, 30000);
-    DWORD exitCode = 0;
-    GetExitCodeThread(th, &exitCode);
-    {
-        wchar_t b[128];
-        swprintf(b, 128, L"  wait=%lu exitcode=0x%08X", (unsigned long)wait, (unsigned long)exitCode);
-        PostLog(b);
-    }
-    if (exitCode == 0) {
-        PostLog(L"  >>> LoadLibraryA RETURN 0 = DLL GAGAL LOAD (DllMain nolak / dependency hilang / file ga kebaca)");
-    } else if (exitCode >= 0xC0000000) {
-        PostLog(L"  >>> THREAD CRASH - kemungkinan injector 64-bit / address salah!");
     } else {
-        wchar_t b[128];
-        swprintf(b, 128, L"  >>> LoadLibraryA SUKSES hmodule=0x%08X", (unsigned long)exitCode);
-        PostLog(b);
+        PostLog(L"  [i] CB.exe gak jalan - lanjut");
     }
-    CloseHandle(th);
 
-    Sleep(800);
-    std::wstring mod;
-    if (ModuleScan(pid, true, mod)) {
-        PostLog(L"  >>> MODULE LIST: " + mod);
+    // 2. clear BeingDebugged / NtGlobalFlag in the target
+    if (PatchRemotePEB(h)) {
+        PostLog(L"  [+] remote PEB patched (BeingDebugged + NtGlobalFlag = 0)");
     } else {
-        PostLog(L"  >>> MODULE LIST: DLL TETEP GAK ADA");
+        PostLog(L"  [!] remote PEB patch gagal - lanjut");
     }
 
-    VirtualFreeEx(h, mem, 0, MEM_RELEASE);
+    // 3. stealth manual map
+    DWORD base = 0, hdrSize = 0;
+    bool ok = ManualMapStealth(h, dll, base, hdrSize);
+    if (ok) {
+        EraseRemoteHeaders(h, base, hdrSize);
+        PostLog(L"  >>> MANUAL MAP SUKSES - DLL gak muncul di module list (by design)");
+        PostLog(L"  >>> ESP/menu harusnya aktif dalam beberapa detik");
+        CloseHandle(h);
+        return true;
+    }
+
+    // 4. fallback
+    PostLog(L"  [!] manual map gagal - fallback ke LoadLibraryA (kedeteksi)");
+    bool fb = InjectLoadLibraryA(h, pid);
     CloseHandle(h);
-    return (exitCode != 0 && exitCode < 0xC0000000);
+    return fb;
 }
 
 static DWORD WINAPI InjectThread(LPVOID) {
