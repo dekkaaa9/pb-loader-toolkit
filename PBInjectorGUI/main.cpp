@@ -39,10 +39,25 @@
 #endif
 
 // ---------------- config ----------------
-static const wchar_t* DLL_PATH   = L"D:\\pbct\\decrypted_payload_cracked.dll";
-static const wchar_t* LOG_DIR_W  = L"D:\\pbct\\logs";
-static const char*    LOG_PATH_A = "D:\\pbct\\logs\\inject_out.txt";
-static const wchar_t* PB_EXE_W   = L"pointblank.exe";
+// Paths resolved at startup relative to this executable's location,
+// so the repo works from any folder it is extracted to.
+static std::wstring DLL_PATH_W;
+static std::wstring LOG_DIR_W;
+static std::wstring LOG_PATH_W;
+static std::wstring EXE_DIR_W;
+static std::wstring PB_EXE_W   = L"pointblank.exe";
+
+static void ResolvePaths() {
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    wchar_t* slash = wcsrchr(exe, L'\\');
+    if (slash) *(slash + 1) = L'\0';
+    EXE_DIR_W = exe;
+
+    DLL_PATH_W  = EXE_DIR_W + L"decrypted_payload_cracked.dll";
+    LOG_DIR_W   = EXE_DIR_W + L"logs";
+    LOG_PATH_W  = LOG_DIR_W + L"\\inject_out.txt";
+}
 
 // ---------------- ids ----------------
 #define IDC_LOG 1002
@@ -337,7 +352,7 @@ static bool InjectToPid(DWORD pid) {
     }
 
     char dllA[MAX_PATH];
-    int n = WideCharToMultiByte(CP_ACP, 0, DLL_PATH, -1, dllA, MAX_PATH, NULL, NULL);
+    int n = WideCharToMultiByte(CP_ACP, 0, DLL_PATH_W.c_str(), -1, dllA, MAX_PATH, NULL, NULL);
     if (n <= 0) {
         PostLog(L"  path convert gagal");
         CloseHandle(h);
@@ -366,7 +381,7 @@ static bool InjectToPid(DWORD pid) {
         wchar_t b[128];
         swprintf(b, 128, L"  path ditulis @ 0x%08X (%u bytes): ",
                  (unsigned long)(uintptr_t)mem, (unsigned long)written);
-        PostLog(std::wstring(b) + DLL_PATH);
+        PostLog(std::wstring(b) + DLL_PATH_W);
     }
 
     HMODULE k32 = GetModuleHandleA("kernel32.dll");
@@ -432,12 +447,12 @@ static bool InjectToPid(DWORD pid) {
 }
 
 static DWORD WINAPI InjectThread(LPVOID) {
-    PostLog(L"=== INJECTOR GUI - " + std::wstring(DLL_PATH) + L" -> PointBlank ===");
+    PostLog(L"=== INJECTOR GUI - " + DLL_PATH_W + L" -> PointBlank ===");
     PostLog(L"env: elevated=OK (GUI 32-bit)");
 
     WIN32_FILE_ATTRIBUTE_DATA fad;
-    if (!GetFileAttributesExW(DLL_PATH, GetFileExInfoStandard, &fad)) {
-        PostLog(L"FATAL: DLL gak ada: " + std::wstring(DLL_PATH));
+    if (!GetFileAttributesExW(DLL_PATH_W.c_str(), GetFileExInfoStandard, &fad)) {
+        PostLog(L"FATAL: DLL gak ada: " + DLL_PATH_W);
         PostMessageW(g_hMain, WM_APP_DONE, 1, 0);
         return 0;
     }
@@ -511,7 +526,7 @@ static void UpdatePill() {
 static void StartInjection() {
     if (g_busy) return;
     if (!g_dllOk) {
-        LogLineUI(L"WARNING: DLL file gak ketemu di D:\\pbct - inject kemungkinan gagal");
+        LogLineUI(L"WARNING: DLL file gak ketemu di " + EXE_DIR_W + L" - inject kemungkinan gagal");
     }
     if (!g_admin) {
         LogLineUI(L"belum admin - minta elevasi (UAC)...");
@@ -530,15 +545,14 @@ static void StartInjection() {
 
 static void DoPatch() {
     LogLineUI(L">>> re-patch DLL (patch_dll_final.ps1)...");
-    ShellExecuteW(NULL, L"open", L"powershell.exe",
-                  L"-ExecutionPolicy Bypass -File D:\\pbct\\patch_dll_final.ps1",
-                  NULL, SW_SHOW);
+    std::wstring args = L"-ExecutionPolicy Bypass -File \"" + EXE_DIR_W + L"patch_dll_final.ps1\"";
+    ShellExecuteW(NULL, L"open", L"powershell.exe", args.c_str(), NULL, SW_SHOW);
     LogLineUI(L"    window powershell kebuka - liat hasilnya di sana");
 }
 
 static void DoLogs() {
     LogLineUI(L">>> buka folder logs...");
-    ShellExecuteW(NULL, L"open", L"explorer.exe", L"D:\\pbct\\logs", NULL, SW_SHOW);
+    ShellExecuteW(NULL, L"open", L"explorer.exe", LOG_DIR_W.c_str(), NULL, SW_SHOW);
 }
 
 static void DoAbout() {
@@ -560,8 +574,8 @@ static void DoAbout() {
                 L"  - Win32 API           (GUI + injector)\n"
                 L"  - DirectX 9           (ESP rendering)\n"
                 L"\n"
-                L"D:\\pbct      - working toolkit + source\n"
-                L"D:\\PB_Sumatra - crack chain\n"
+                L"pb-loader-toolkit - this repo\n"
+                L"PB_Sumatra         - crack chain\n"
                 L"\n"
                 L"Hotkey in-game: INSERT (menu), END (panic)",
                 L"About - PB Sumatra", MB_OK | MB_ICONINFORMATION);
@@ -921,7 +935,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         // dll card
         {
             WIN32_FILE_ATTRIBUTE_DATA fad;
-            if (GetFileAttributesExW(DLL_PATH, GetFileExInfoStandard, &fad)) {
+            if (GetFileAttributesExW(DLL_PATH_W.c_str(), GetFileExInfoStandard, &fad)) {
                 ULONGLONG sz = ((ULONGLONG)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
                 wchar_t b[300];
                 swprintf(b, 300, L"decrypted_payload_cracked.dll  ·  %llu bytes",
@@ -1139,9 +1153,15 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR lpCmdLine, int nShow) {
         (void)hMutex;
     }
 
-    CreateDirectoryW(LOG_DIR_W, NULL);
-    g_hLogFile = CreateFileA(LOG_PATH_A, GENERIC_WRITE, FILE_SHARE_READ, NULL,
-                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    ResolvePaths();
+
+    CreateDirectoryW(LOG_DIR_W.c_str(), NULL);
+    {
+        char logA[MAX_PATH];
+        WideCharToMultiByte(CP_ACP, 0, LOG_PATH_W.c_str(), -1, logA, MAX_PATH, NULL, NULL);
+        g_hLogFile = CreateFileA(logA, GENERIC_WRITE, FILE_SHARE_READ, NULL,
+                                 OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    }
     if (g_hLogFile != INVALID_HANDLE_VALUE)
         SetFilePointer(g_hLogFile, 0, NULL, FILE_END);
 

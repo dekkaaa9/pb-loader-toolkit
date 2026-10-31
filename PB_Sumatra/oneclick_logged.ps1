@@ -3,7 +3,7 @@
  ONE-CLICK CRACK + FULL RUN LOG - Sumatra PB Cheat (cracked loader)
 ====================================================================
  Tujuan: tiap run menghasilkan log lengkap di:
-   D:\PB_Sumatra\logs\run_YYYYMMDD_HHMMSS.log
+   $Sumatra\logs\run_YYYYMMDD_HHMMSS.log
 
  Log merekam:
    1. Status patch loader (CB.exe killswitch, serial, filesize)
@@ -20,7 +20,7 @@
   12. SUMMARY + VERDIK diagnosis di akhir log
 
  Cara pakai:
-   powershell -ExecutionPolicy Bypass -File D:\PB_Sumatra\oneclick_logged.ps1
+   powershell -ExecutionPolicy Bypass -File $Sumatra\oneclick_logged.ps1
    (script auto-relaunch sebagai ADMIN kalau belum)
    Lalu start PointBlank. Biarkan sampai selesai / timeout.
 ====================================================================
@@ -30,18 +30,23 @@
 # Cracked by dekkaaa9  |  https://github.com/dekkaaa9
 # Tools: REA, Ghidra, PowerShell, llvm-mingw, Win32 API, DirectX 9
 # ------------------------------------------------------------
+
 param(
-    [string]$LoaderPath     = 'D:\PB_Sumatra\LoaderVIP_cracked.exe',
-    [string]$CrackedDllPath = 'D:\pbct\decrypted_payload_cracked.dll',
+    [string]$LoaderPath     = (Join-Path $PSScriptRoot 'LoaderVIP_cracked.exe'),
+    [string]$CrackedDllPath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'decrypted_payload_cracked.dll'),
     [int]$WatchSeconds      = 900,
     [string]$LogFile        = ''
 )
+
+# ---- portable paths: repo root auto-detected from script location ----
+$Sumatra = $PSScriptRoot
+$Pbct    = Split-Path $PSScriptRoot -Parent
 
 $ErrorActionPreference = 'Continue'
 
 # ================= LOGGING =================
 if ([string]::IsNullOrEmpty($LogFile)) {
-    $logDir = 'D:\PB_Sumatra\logs'
+    $logDir = (Join-Path $Sumatra 'logs')
     if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
     $LogFile = Join-Path $logDir ("run_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
 }

@@ -3,17 +3,20 @@
 # FIX v2: [IntPtr]::Size (bukan Is32BitProcess yg ga eksis di .NET4),
 #         try/catch relaunch + EXIT kalau gagal, GetExitCodeThread
 #         buat tau LoadLibraryA return value
-# Output: D:\pbct\logs\inject_out.txt
+# Output: $Root\logs\inject_out.txt
 # ============================================================
 
 # ------------------------------------------------------------
 # Cracked by dekkaaa9  |  https://github.com/dekkaaa9
 # Tools: REA, Ghidra, PowerShell, llvm-mingw, Win32 API, DirectX 9
+
+# ---- portable paths: repo root auto-detected from script location ----
+$Root = $PSScriptRoot
 # ------------------------------------------------------------
 $ErrorActionPreference = 'Continue'
 
 # --- DLL yang mau di-inject (ganti ke original buat tes kalau perlu) ---
-$dllPath = 'D:\pbct\decrypted_payload_cracked.dll'
+$dllPath = (Join-Path $Root 'decrypted_payload_cracked.dll')
 
 # --- cek 32-bit: PB itu x86, injector HARUS 32-bit ---
 if ([IntPtr]::Size -eq 8) {
@@ -97,7 +100,7 @@ L "env: IntPtr.Size=$([IntPtr]::Size) (4=32bit OK) | PS=$($PSVersionTable.PSVers
 
 if (-not (Test-Path $dllPath)) {
     L "FATAL: DLL gak ada: $dllPath"
-    $log | Out-File 'D:\pbct\logs\inject_out.txt' -Encoding utf8
+    $log | Out-File (Join-Path $Root 'logs\inject_out.txt') -Encoding utf8
     exit
 }
 $md5 = (Get-FileHash $dllPath -Algorithm MD5).Hash
@@ -105,7 +108,7 @@ $fsz = (Get-Item $dllPath).Length
 L "DLL: size=$fsz md5=$md5"
 
 $pbs = @(Get-Process PointBlank -ErrorAction SilentlyContinue)
-if ($pbs.Count -eq 0) { L "PB gak jalan!"; $log | Out-File 'D:\pbct\logs\inject_out.txt' -Encoding utf8; exit }
+if ($pbs.Count -eq 0) { L "PB gak jalan!"; $log | Out-File (Join-Path $Root 'logs\inject_out.txt') -Encoding utf8; exit }
 
 # --- pilih target: yang punya main window ---
 $targets = @($pbs | Where-Object { $_.MainWindowTitle -ne '' })
@@ -210,4 +213,4 @@ foreach ($pb in $targets) {
 L ""
 L "SELESAI - kalau exitcode=0xC0000005 -> injector masih 64-bit (UAC declined?)"
 L "      - kalau exitcode=0 -> DLL nolak load (coba inject original buat tes)"
-$log | Out-File 'D:\pbct\logs\inject_out.txt' -Encoding utf8
+$log | Out-File (Join-Path $Root 'logs\inject_out.txt') -Encoding utf8

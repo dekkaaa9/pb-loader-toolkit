@@ -20,9 +20,12 @@
 # ------------------------------------------------------------
 # Cracked by dekkaaa9  |  https://github.com/dekkaaa9
 # Tools: REA, Ghidra, PowerShell, llvm-mingw, Win32 API, DirectX 9
+
+# ---- portable paths: repo root auto-detected from script location ----
+$Root = $PSScriptRoot
 # ------------------------------------------------------------
-$dllPath = 'D:\pbct\decrypted_payload_cracked.dll'
-$bakPath = 'D:\pbct\decrypted_payload_cracked.dll.bak'
+$dllPath = (Join-Path $Root 'decrypted_payload_cracked.dll')
+$bakPath = (Join-Path $Root 'decrypted_payload_cracked.dll.bak')
 
 $patches = @(
     @{ fo = 0x05F5E4; orig = @(0x74,0xEA);                    patched = @(0x90,0x90);                   desc = 'PATCH A init-thread wait-loop-2' },

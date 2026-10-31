@@ -5,9 +5,13 @@
 # ------------------------------------------------------------
 # Cracked by dekkaaa9  |  https://github.com/dekkaaa9
 # Tools: REA, Ghidra, PowerShell, llvm-mingw, Win32 API, DirectX 9
+
+# ---- portable paths: repo root auto-detected from script location ----
+$Sumatra = $PSScriptRoot
+$Pbct    = Split-Path $PSScriptRoot -Parent
 # ------------------------------------------------------------
 $sourcePath = 'C:\Users\PIXWAR\Downloads\Loadertrial.exe'
-$outputPath = 'D:\PB_Sumatra\Loadertrial_cracked.exe'
+$outputPath = (Join-Path $Sumatra 'Loadertrial_cracked.exe')
 
 $bytes = [System.IO.File]::ReadAllBytes($sourcePath)
 

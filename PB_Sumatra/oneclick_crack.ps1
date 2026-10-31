@@ -8,10 +8,15 @@
 # Cracked by dekkaaa9  |  https://github.com/dekkaaa9
 # Tools: REA, Ghidra, PowerShell, llvm-mingw, Win32 API, DirectX 9
 # ------------------------------------------------------------
+
 param(
-    [string]$LoaderPath = 'D:\PB_Sumatra\LoaderVIP_cracked.exe',
-    [string]$CrackedDllPath = 'D:\pbct\decrypted_payload_cracked.dll'
+    [string]$LoaderPath = (Join-Path $PSScriptRoot 'LoaderVIP_cracked.exe'),
+    [string]$CrackedDllPath = (Join-Path (Split-Path $PSScriptRoot -Parent) 'decrypted_payload_cracked.dll')
 )
+
+# ---- portable paths: repo root auto-detected from script location ----
+$Sumatra = $PSScriptRoot
+$Pbct    = Split-Path $PSScriptRoot -Parent
 
 $ErrorActionPreference = 'Stop'
 $temp = $env:TEMP

@@ -1,8 +1,12 @@
 # ------------------------------------------------------------
 # Cracked by dekkaaa9  |  https://github.com/dekkaaa9
 # Tools: REA, Ghidra, PowerShell, llvm-mingw, Win32 API, DirectX 9
+
+# ---- portable paths: repo root auto-detected from script location ----
+$Sumatra = $PSScriptRoot
+$Pbct    = Split-Path $PSScriptRoot -Parent
 # ------------------------------------------------------------
-$bytes = [System.IO.File]::ReadAllBytes('D:\PB_Sumatra\decrypted_payload.dll')
+$bytes = [System.IO.File]::ReadAllBytes((Join-Path $Sumatra 'decrypted_payload.dll'))
 
 # .rdata: VA=0x9A000, Raw=0x99200
 function VaToFO($va) {

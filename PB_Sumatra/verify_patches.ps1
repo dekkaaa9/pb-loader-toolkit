@@ -1,9 +1,13 @@
 # ------------------------------------------------------------
 # Cracked by dekkaaa9  |  https://github.com/dekkaaa9
 # Tools: REA, Ghidra, PowerShell, llvm-mingw, Win32 API, DirectX 9
+
+# ---- portable paths: repo root auto-detected from script location ----
+$Sumatra = $PSScriptRoot
+$Pbct    = Split-Path $PSScriptRoot -Parent
 # ------------------------------------------------------------
 $orig = [System.IO.File]::ReadAllBytes('C:\Users\PIXWAR\AppData\Local\Temp\LoaderTrialTemp\LoaderVIP.exe')
-$cracked = [System.IO.File]::ReadAllBytes('D:\PB_Sumatra\LoaderVIP_cracked.exe')
+$cracked = [System.IO.File]::ReadAllBytes((Join-Path $Sumatra 'LoaderVIP_cracked.exe'))
 
 Write-Output "=== VERIFY PATCHES IN LoaderVIP_cracked.exe ==="
 Write-Output ""

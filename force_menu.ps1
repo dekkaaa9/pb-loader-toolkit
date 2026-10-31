@@ -9,11 +9,14 @@
 # + RUNTIME WRITE: menu-visible (RVA 0xB2498) = 1
 # Pakai:  force_menu.ps1          = apply patch
 #         force_menu.ps1 revert   = balikin byte asli
-# Output: D:\pbct\logs\force_out.txt
+# Output: $Root\logs\force_out.txt
 # ============================================================
 # ------------------------------------------------------------
 # Cracked by dekkaaa9  |  https://github.com/dekkaaa9
 # Tools: REA, Ghidra, PowerShell, llvm-mingw, Win32 API, DirectX 9
+
+# ---- portable paths: repo root auto-detected from script location ----
+$Root = $PSScriptRoot
 # ------------------------------------------------------------
 param([string]$mode = 'apply')
 
@@ -79,7 +82,7 @@ foreach ($p in @(Get-Process PointBlank -ErrorAction SilentlyContinue)) {
 if ($null -eq $pb) {
     L "ERROR: proses PointBlank (window='Point Blank') TIDAK JALAN!"
     L "Start PB dulu, masuk lobby, inject DLL, baru jalankan script ini."
-    $log | Out-File 'D:\pbct\logs\force_out.txt' -Encoding utf8
+    $log | Out-File (Join-Path $Root 'logs\force_out.txt') -Encoding utf8
     exit
 }
 L "PB pid=$($pb.Id) window='$($pb.MainWindowTitle)'"
@@ -88,7 +91,7 @@ L "PB pid=$($pb.Id) window='$($pb.MainWindowTitle)'"
 $snap = [PT8]::CreateToolhelp32Snapshot(0x18, [uint32]$pb.Id)
 if ($snap.ToInt64() -eq -1 -or $snap -eq [IntPtr]::Zero) {
     L "ERROR: module snapshot gagal"
-    $log | Out-File 'D:\pbct\logs\force_out.txt' -Encoding utf8
+    $log | Out-File (Join-Path $Root 'logs\force_out.txt') -Encoding utf8
     exit
 }
 $me = New-Object 'PT8+MODULEENTRY32'
@@ -106,14 +109,14 @@ if ([PT8]::Module32First($snap, [ref]$me)) {
 if ($dllBase -eq [IntPtr]::Zero) {
     L "ERROR: DLL cheat TIDAK KE-LOAD di proses PB!"
     L "Jalankan inject_v2.ps1 dulu (PB harus di lobby)."
-    $log | Out-File 'D:\pbct\logs\force_out.txt' -Encoding utf8
+    $log | Out-File (Join-Path $Root 'logs\force_out.txt') -Encoding utf8
     exit
 }
 
 $h = [PT8]::OpenProcess(0x1F0FFF, $false, [uint32]$pb.Id)
 if ($h -eq [IntPtr]::Zero) {
     L ("ERROR: OpenProcess denied err={0}" -f [Runtime.InteropServices.Marshal]::GetLastWin32Error())
-    $log | Out-File 'D:\pbct\logs\force_out.txt' -Encoding utf8
+    $log | Out-File (Join-Path $Root 'logs\force_out.txt') -Encoding utf8
     exit
 }
 L ("OpenProcess OK h={0}" -f $h)
@@ -203,7 +206,7 @@ if ($mode -eq 'revert') {
     L "PATCH APPLIED (A+B+C+D+E+F) + menu-visible=1!"
     L ">>> CEK LAYAR PB SEKARANG - menu cheat harusnya MUNCUL!"
     L ">>> INSERT tetap bisa dipakai buat toggle menu (handler VK 0x2E gak disentuh)"
-    L ">>> kalau error/crash, balikin: powershell -ExecutionPolicy Bypass -File D:\pbct\force_menu.ps1 revert"
+    L ">>> kalau error/crash, balikin: powershell -ExecutionPolicy Bypass -File $Root\force_menu.ps1 revert"
 }
-$log | Out-File 'D:\pbct\logs\force_out.txt' -Encoding utf8
-L "SELESAI - D:\pbct\logs\force_out.txt"
+$log | Out-File (Join-Path $Root 'logs\force_out.txt') -Encoding utf8
+L "SELESAI - $Root\logs\force_out.txt"

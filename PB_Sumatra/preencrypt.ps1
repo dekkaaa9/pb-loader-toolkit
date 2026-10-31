@@ -9,8 +9,12 @@
 # ------------------------------------------------------------
 # Cracked by dekkaaa9  |  https://github.com/dekkaaa9
 # Tools: REA, Ghidra, PowerShell, llvm-mingw, Win32 API, DirectX 9
+
+# ---- portable paths: repo root auto-detected from script location ----
+$Sumatra = $PSScriptRoot
+$Pbct    = Split-Path $PSScriptRoot -Parent
 # ------------------------------------------------------------
-$crackedDll = [System.IO.File]::ReadAllBytes('D:\pbct\decrypted_payload_cracked.dll')
+$crackedDll = [System.IO.File]::ReadAllBytes((Join-Path $Pbct 'decrypted_payload_cracked.dll'))
 $key = [System.Text.Encoding]::ASCII.GetBytes('325768235246856876125')
 
 $preEncrypted = New-Object byte[] $crackedDll.Length
@@ -18,11 +22,11 @@ for ($i = 0; $i -lt $crackedDll.Length; $i++) {
     $preEncrypted[$i] = $crackedDll[$i] -bxor $key[$i % $key.Length]
 }
 
-[System.IO.File]::WriteAllBytes('D:\PB_Sumatra\payload_preencrypted.bin', $preEncrypted)
+[System.IO.File]::WriteAllBytes((Join-Path $Sumatra 'payload_preencrypted.bin'), $preEncrypted)
 
-Write-Output "Pre-encrypted cracked DLL saved to: D:\PB_Sumatra\payload_preencrypted.bin"
+Write-Output "Pre-encrypted cracked DLL saved to: $Sumatra\payload_preencrypted.bin"
 Write-Output "Size: $($preEncrypted.Length) bytes"
-Write-Output "SHA256: $((Get-FileHash 'D:\PB_Sumatra\payload_preencrypted.bin' -Algorithm SHA256).Hash)"
+Write-Output "SHA256: $((Get-FileHash (Join-Path $Sumatra 'payload_preencrypted.bin') -Algorithm SHA256).Hash)"
 Write-Output ""
 Write-Output "This file, when XOR-decrypted by the loader with key '325768235246856876125',"
 Write-Output "produces the CRACKED DLL (key validation bypassed)."

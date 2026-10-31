@@ -14,9 +14,13 @@
 # ------------------------------------------------------------
 # Cracked by dekkaaa9  |  https://github.com/dekkaaa9
 # Tools: REA, Ghidra, PowerShell, llvm-mingw, Win32 API, DirectX 9
+
+# ---- portable paths: repo root auto-detected from script location ----
+$Sumatra = $PSScriptRoot
+$Pbct    = Split-Path $PSScriptRoot -Parent
 # ------------------------------------------------------------
-$sourcePath = 'D:\PB_Sumatra\decrypted_payload.dll'
-$outputPath = 'D:\pbct\decrypted_payload_cracked.dll'
+$sourcePath = (Join-Path $Sumatra 'decrypted_payload.dll')
+$outputPath = (Join-Path $Pbct 'decrypted_payload_cracked.dll')
 
 $bytes = [System.IO.File]::ReadAllBytes($sourcePath)
 $origHash = (Get-FileHash $sourcePath -Algorithm SHA256).Hash

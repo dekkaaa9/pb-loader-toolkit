@@ -1,8 +1,12 @@
 # ------------------------------------------------------------
 # Cracked by dekkaaa9  |  https://github.com/dekkaaa9
 # Tools: REA, Ghidra, PowerShell, llvm-mingw, Win32 API, DirectX 9
+
+# ---- portable paths: repo root auto-detected from script location ----
+$Sumatra = $PSScriptRoot
+$Pbct    = Split-Path $PSScriptRoot -Parent
 # ------------------------------------------------------------
-$encrypted = [System.IO.File]::ReadAllBytes('D:\PB_Sumatra\downloaded_payload.bin')
+$encrypted = [System.IO.File]::ReadAllBytes((Join-Path $Sumatra 'downloaded_payload.bin'))
 $key = [System.Text.Encoding]::ASCII.GetBytes('325768235246856876125')
 $decrypted = New-Object byte[] $encrypted.Length
 
@@ -18,9 +22,9 @@ if ($decrypted[0] -eq 0x4D -and $decrypted[1] -eq 0x5A) {
     Write-Output "  $hex"
     
     # Save
-    [System.IO.File]::WriteAllBytes('D:\PB_Sumatra\decrypted_payload.dll', $decrypted)
+    [System.IO.File]::WriteAllBytes((Join-Path $Sumatra 'decrypted_payload.dll'), $decrypted)
     Write-Output ""
-    Write-Output "Saved to: D:\PB_Sumatra\decrypted_payload.dll"
+    Write-Output "Saved to: $Sumatra\decrypted_payload.dll"
     Write-Output "Size: $($decrypted.Length) bytes"
     
     # Get PE info

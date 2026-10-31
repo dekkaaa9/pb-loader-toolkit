@@ -10,8 +10,12 @@
 # ------------------------------------------------------------
 # Cracked by dekkaaa9  |  https://github.com/dekkaaa9
 # Tools: REA, Ghidra, PowerShell, llvm-mingw, Win32 API, DirectX 9
+
+# ---- portable paths: repo root auto-detected from script location ----
+$Sumatra = $PSScriptRoot
+$Pbct    = Split-Path $PSScriptRoot -Parent
 # ------------------------------------------------------------
-$loaderPath = 'D:\PB_Sumatra\LoaderVIP_cracked.exe'
+$loaderPath = (Join-Path $Sumatra 'LoaderVIP_cracked.exe')
 $bytes = [System.IO.File]::ReadAllBytes($loaderPath)
 
 # RVA 0x72C5 -> FO = 0x400 + (0x72C5 - 0x1000) = 0x66C5
@@ -55,7 +59,7 @@ Write-Output ""
 Write-Output "Backup of original loader: LoaderVIP_cracked.exe.bak (if not exists)"
 
 # Create backup of the ORIGINAL (pre-this-patch) loader if not already done
-$bak = 'D:\PB_Sumatra\LoaderVIP_cracked_precbpatch.exe.bak'
+$bak = (Join-Path $Sumatra 'LoaderVIP_cracked_precbpatch.exe.bak')
 if (-not (Test-Path $bak)) {
     # Re-read the file we just wrote, restore the 2 bytes for the backup
     $bakBytes = [System.IO.File]::ReadAllBytes($loaderPath)
