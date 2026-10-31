@@ -1,0 +1,24 @@
+# Auto-detect text files and normalize line endings
+* text=auto
+
+# ============================================================
+# CRITICAL: these MUST stay binary. Without this, git may do
+# CRLF conversion and CORRUPT the cracked loader / payload.
+# ============================================================
+*.exe   binary
+*.dll   binary
+*.bin   binary
+*.bak   binary
+*.obj   binary
+*.lib   binary
+*.a     binary
+*.png   binary
+*.jpg   binary
+*.ico   binary
+
+# Scripts + source: keep CRLF (Windows project)
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cpp   text eol=crlf
+*.h     text eol=crlf
+*.md    text eol=crlf
